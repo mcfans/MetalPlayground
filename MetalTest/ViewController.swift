@@ -284,6 +284,8 @@ class ViewController: UIViewController {
     
     var texture: MTLTexture?
     
+    private var depthStencilState: MTLDepthStencilState!
+    
     required init?(coder: NSCoder) {
         let device = MTLCreateSystemDefaultDevice()!
         self.mtkView = MTKView(frame: .zero, device: device)
@@ -343,6 +345,14 @@ class ViewController: UIViewController {
         mtkView.clearColor = MTLClearColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1.0)
         mtkView.depthStencilPixelFormat = .depth32Float
         mtkView.colorPixelFormat = .bgra8Unorm
+        
+        // Enable depth testing
+        let depthStateDescriptor = MTLDepthStencilDescriptor()
+        depthStateDescriptor.depthCompareFunction = .less
+        depthStateDescriptor.isDepthWriteEnabled = true
+        
+        guard let device = mtkView.device else { return }
+        depthStencilState = device.makeDepthStencilState(descriptor: depthStateDescriptor)
     }
     
     private func setupCamera() {
@@ -414,9 +424,6 @@ class ViewController: UIViewController {
     }
     
     func draw(in view: MTKView) {
-//        guard let renderPassDesc else {
-//            return
-//        }
         guard let commandQueue = commandQueue else {
             return
         }
@@ -424,15 +431,10 @@ class ViewController: UIViewController {
             return
         }
         
-//        if let drawable = view.currentDrawable {
-//            renderPassDesc.colorAttachments[0].texture = drawable.texture
-//        }
-        
         guard let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: view.currentRenderPassDescriptor!) else {
             return
         }
 
-        
         instance[0].rotation = GLKMatrix4RotateY(instance[0].rotation, 1 / 360)
         
         let ptr = self.instanceBuffer?.contents()
@@ -453,7 +455,8 @@ class ViewController: UIViewController {
         renderEncoder.setVertexBuffer(uniformsBuffer, offset: 0, index: 2)
         renderEncoder.setFragmentTexture(texture, index: 0)
 //        renderEncoder.setTriangleFillMode(.lines)
-        renderEncoder.setCullMode(.back)
+//        renderEncoder.setCullMode(.front)
+        renderEncoder.setDepthStencilState(depthStencilState)
         
         // 绘制实例
         renderEncoder.drawIndexedPrimitives(type: .triangle,

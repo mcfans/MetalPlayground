@@ -64,7 +64,7 @@ vertex VertexOut vertex_main(const VertexIn vertices [[stage_in]],
 
     float4 normalized = v / v.w;
 
-    out.uvz = float3(vertices.uv.yx/normalized.z, 1/normalized.z);
+    out.uvz = float3(vertices.uv.xy/normalized.z, 1/normalized.z);
     out.position = normalized;
     
     return out;
