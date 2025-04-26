@@ -12,15 +12,9 @@ import Accelerate
 import Spatial
 import GLKit
 
-struct Face {
-    let a: UInt16
-    let b: UInt16
-    let c: UInt16
-}
-
 struct Model {
     let vertex: [Vector3<Float>]
-    let faces: [Vector3<Int>]
+    let facesCount: Int
 }
 
 struct Matrix4x4<T> where T: SIMDScalar {
@@ -79,6 +73,136 @@ struct Vector3<T> {
         self.y = y
         self.z = z
     }
+}
+
+struct Vector2<T> {
+    var x: T
+    var y: T
+    
+    init(x: T, y: T) {
+        self.x = x
+        self.y = y
+    }
+}
+
+struct TextureCoord {
+    var u: Float
+    var v: Float
+    
+    init(u: Float, v: Float) {
+        self.u = u
+        self.v = v
+    }
+}
+
+struct Face {
+    let vertices: Vector3<Float>
+    let textureCoord: Vector2<Float>
+}
+
+func parseObj(filePath: String) -> (faces: [Face], indices: [UInt16]) {
+    var vertices: [Vector3<Float>] = []
+    var texCoords: [TextureCoord] = []
+    var faces: [Face] = []
+    var indices: [UInt16] = []
+    
+    do {
+        let fileContents = try String(contentsOfFile: filePath, encoding: .utf8)
+        let lines = fileContents.components(separatedBy: .newlines)
+        
+        for line in lines {
+            // 跳过空行和注释
+            if line.isEmpty || line.hasPrefix("#") {
+                continue
+            }
+            
+            let components = line.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            if components.isEmpty { continue }
+            
+            let identifier = components[0]
+            
+            // 处理顶点
+            if identifier == "v" && components.count >= 4 {
+                if let x = Float(components[1]),
+                   let y = Float(components[2]),
+                   let z = Float(components[3]) {
+                    vertices.append(Vector3(x: x, y: y, z: z))
+                }
+            }
+            // 处理纹理坐标
+            else if identifier == "vt" && components.count >= 3 {
+                if let u = Float(components[1]),
+                   let v = Float(components[2]) {
+                    texCoords.append(TextureCoord(u: u, v: v))
+                }
+            }
+            // 处理面（三角形）
+            else if identifier == "f" && components.count >= 4 {
+                // 提取顶点索引和纹理坐标索引
+                var vertexIndices: [Int] = []
+                var uvIndices: [Int] = []
+                
+                for i in 1..<components.count {
+                    let vertexData = components[i].components(separatedBy: "/")
+                    
+                    if let vertexIndex = Int(vertexData[0]) {
+                        vertexIndices.append(vertexIndex - 1)
+                    }
+                    
+                    if vertexData.count > 1 && !vertexData[1].isEmpty {
+                        if let uvIndex = Int(vertexData[1]) {
+                            uvIndices.append(uvIndex - 1)
+                        }
+                    } else {
+                        uvIndices.append(-1)
+                    }
+                }
+                
+                // 处理三角形面
+                if vertexIndices.count == 3 {
+                    let v1 = vertices[vertexIndices[0]]
+                    let v2 = vertices[vertexIndices[1]]
+                    let v3 = vertices[vertexIndices[2]]
+                    
+                    let uv1 = uvIndices[0] >= 0 ? texCoords[uvIndices[0]] : TextureCoord(u: 0, v: 0)
+                    let uv2 = uvIndices[1] >= 0 ? texCoords[uvIndices[1]] : TextureCoord(u: 0, v: 0)
+                    let uv3 = uvIndices[2] >= 0 ? texCoords[uvIndices[2]] : TextureCoord(u: 0, v: 0)
+                    
+                    faces.append(Face(vertices: v1, textureCoord: Vector2(x: uv1.u, y: uv1.v)))
+                    faces.append(Face(vertices: v2, textureCoord: Vector2(x: uv2.u, y: uv2.v)))
+                    faces.append(Face(vertices: v3, textureCoord: Vector2(x: uv3.u, y: uv3.v)))
+                    
+                    indices.append(UInt16(faces.count - 3))
+                    indices.append(UInt16(faces.count - 2))
+                    indices.append(UInt16(faces.count - 1))
+                }
+                // 如果面是四边形或多边形，需要三角化
+                else if vertexIndices.count > 3 {
+                    for i in 1..<(vertexIndices.count - 1) {
+                        let v1 = vertices[vertexIndices[0]]
+                        let v2 = vertices[vertexIndices[i]]
+                        let v3 = vertices[vertexIndices[i + 1]]
+                        
+                        let uv1 = uvIndices[0] >= 0 ? texCoords[uvIndices[0]] : TextureCoord(u: 0, v: 0)
+                        let uv2 = uvIndices[i] >= 0 ? texCoords[uvIndices[i]] : TextureCoord(u: 0, v: 0)
+                        let uv3 = uvIndices[i + 1] >= 0 ? texCoords[uvIndices[i + 1]] : TextureCoord(u: 0, v: 0)
+                        
+                        faces.append(Face(vertices: v1, textureCoord: Vector2(x: uv1.u, y: uv1.v)))
+                        faces.append(Face(vertices: v2, textureCoord: Vector2(x: uv2.u, y: uv2.v)))
+                        faces.append(Face(vertices: v3, textureCoord: Vector2(x: uv3.u, y: uv3.v)))
+                        
+                        indices.append(UInt16(faces.count - 3))
+                        indices.append(UInt16(faces.count - 2))
+                        indices.append(UInt16(faces.count - 1))
+                    }
+                }
+            }
+        }
+    } catch {
+        print("Error reading OBJ file: \(error)")
+    }
+    
+    return (faces, indices)
 }
 
 func parseFile(filePath: String) -> (vertices: [Vector3<Float>], triangles: [Vector3<Int>]) {
@@ -158,6 +282,8 @@ class ViewController: UIViewController {
     
     var renderPassDesc: MTLRenderPassDescriptor?
     
+    var texture: MTLTexture?
+    
     required init?(coder: NSCoder) {
         let device = MTLCreateSystemDefaultDevice()!
         self.mtkView = MTKView(frame: .zero, device: device)
@@ -179,7 +305,7 @@ class ViewController: UIViewController {
         
         instanceBuffer = mtkView.device?.makeBuffer(length: MemoryLayout<Instance>.size * 1024)
         let empty = Instance(modelIndex: 0, scale: .zero, rotation: GLKMatrix4Identity, translation: .zero)
-        instance.append(.init(modelIndex: 0, scale: simd_float3.init(x: 50, y: 50, z: 50), rotation: GLKMatrix4Identity, translation: .zero))
+        instance.append(.init(modelIndex: 0, scale: simd_float3.init(x: 1, y: 1, z: 1) * 2, rotation: GLKMatrix4Identity, translation: .zero))
         let ptr = instanceBuffer?.contents()
         let buffer = UnsafeMutableBufferPointer(start: ptr!.assumingMemoryBound(to: Instance.self), count: 1024)
         buffer.initialize(repeating: empty)
@@ -191,7 +317,27 @@ class ViewController: UIViewController {
         setupCamera()
         setupBuffers()
         setupRenderPipeline()
+        
+        guard let device = mtkView.device,
+              let commandQueue = device.makeCommandQueue() else {
+            return
+        }
+        
+        let loader = MTKTextureLoader(device: device)
+        
+        texture = try! loader.newTexture(URL: Bundle.main.url(forResource: "WOLF", withExtension: "TIF")!, options: nil)
+        
+        let renderPassDescriptor = MTLRenderPassDescriptor()
+        
+        // 配置color attachment，使用MTKView的currentDrawable的texture
+        renderPassDescriptor.colorAttachments[0].loadAction = .clear
+        renderPassDescriptor.colorAttachments[0].storeAction = .store
+        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
+        self.renderPassDesc = renderPassDescriptor
+        self.commandQueue = commandQueue
     }
+    
+    var commandQueue: MTLCommandQueue?
     
     private func setupView() {
         mtkView.clearColor = MTLClearColor(red: 0.1, green: 0.1, blue: 0.1, alpha: 1.0)
@@ -201,7 +347,7 @@ class ViewController: UIViewController {
     
     private func setupCamera() {
         camera = Camera(
-            translate: Vector3D(x: 0, y: 0, z: -50),
+            translate: Vector3D(x: 0, y: 0, z: -10),
             rotate: Rotation3D.identity,
             fov: 60.0,
             aspect: Float(mtkView.bounds.width / mtkView.bounds.height),
@@ -212,27 +358,21 @@ class ViewController: UIViewController {
     
     private func setupBuffers() {
         guard let device = mtkView.device,
-              let file = Bundle.main.path(forResource: "bun_zipper", ofType: "ply") else { return }
+              let file = Bundle.main.path(forResource: "WOLF", ofType: "OBJ") else { return }
         
-        let (vertices, faces) = parseFile(filePath: file)
-        let model = Model(vertex: vertices, faces: faces)
+        let (vertices, faces) = parseObj(filePath: file)
+        let model = Model(vertex: [], facesCount: faces.count)
         models.append(model)
         
         // 创建顶点缓冲
-        let vertexData = vertices.map { SIMD3<Float>($0.x, $0.y, $0.z) }
+//        let vertexData = vertices.map { SIMD8<Float>($0.vertices.x, $0.vertices.y, $0.vertices.z, $0.textureCoord.x, $0.textureCoord.y, 0, 0, 0) }
+        let vertexData = vertices.map { simd_float2x3(SIMD3<Float>.init($0.vertices.x, $0.vertices.y, $0.vertices.z), .init($0.textureCoord.x, $0.textureCoord.y, 0)) }
         vertexBuffer = device.makeBuffer(bytes: vertexData,
-                                         length: MemoryLayout<SIMD3<Float>>.stride * vertices.count,
+                                         length: MemoryLayout<simd_float2x3>.stride * vertices.count,
                                          options: .storageModeShared)
         
-        // 创建索引缓冲
-        var indices: [UInt16] = []
-        for face in faces {
-            indices.append(UInt16(face.x))
-            indices.append(UInt16(face.y))
-            indices.append(UInt16(face.z))
-        }
-        indexBuffer = device.makeBuffer(bytes: indices,
-                                        length: MemoryLayout<UInt16>.stride * indices.count,
+        indexBuffer = device.makeBuffer(bytes: faces,
+                                        length: MemoryLayout<UInt16>.stride * faces.count,
                                         options: .storageModeShared)
         
         // 创建 Uniforms 缓冲
@@ -254,7 +394,11 @@ class ViewController: UIViewController {
         vertexDescriptor.attributes[0].offset = 0
         vertexDescriptor.attributes[0].bufferIndex = 0
         
-        vertexDescriptor.layouts[0].stride = MemoryLayout<SIMD3<Float>>.stride
+        vertexDescriptor.attributes[1].format = .float3
+        vertexDescriptor.attributes[1].offset = MemoryLayout<simd_float3>.stride
+        vertexDescriptor.attributes[1].bufferIndex = 0
+
+        vertexDescriptor.layouts[0].stride = MemoryLayout<simd_float2x3>.stride
         
         pipelineDescriptor.vertexDescriptor = vertexDescriptor
         
@@ -270,15 +414,26 @@ class ViewController: UIViewController {
     }
     
     func draw(in view: MTKView) {
-        guard let device = view.device,
-              let commandQueue = device.makeCommandQueue(),
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let renderPassDescriptor = view.currentRenderPassDescriptor,
-              let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+//        guard let renderPassDesc else {
+//            return
+//        }
+        guard let commandQueue = commandQueue else {
+            return
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             return
         }
         
-        instance[0].rotation = GLKMatrix4RotateY(instance[0].rotation, 10 / 180)
+//        if let drawable = view.currentDrawable {
+//            renderPassDesc.colorAttachments[0].texture = drawable.texture
+//        }
+        
+        guard let renderEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: view.currentRenderPassDescriptor!) else {
+            return
+        }
+
+        
+        instance[0].rotation = GLKMatrix4RotateY(instance[0].rotation, 1 / 360)
         
         let ptr = self.instanceBuffer?.contents()
         
@@ -296,10 +451,13 @@ class ViewController: UIViewController {
         renderEncoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
         renderEncoder.setVertexBuffer(instanceBuffer, offset: 0, index: 1)
         renderEncoder.setVertexBuffer(uniformsBuffer, offset: 0, index: 2)
+        renderEncoder.setFragmentTexture(texture, index: 0)
+//        renderEncoder.setTriangleFillMode(.lines)
+        renderEncoder.setCullMode(.back)
         
         // 绘制实例
         renderEncoder.drawIndexedPrimitives(type: .triangle,
-                                            indexCount: models[0].faces.count * 3,
+                                            indexCount: models[0].facesCount,
                                             indexType: .uint16,
                                             indexBuffer: indexBuffer,
                                             indexBufferOffset: 0,
